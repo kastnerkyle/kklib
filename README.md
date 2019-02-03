@@ -1,2 +1,0 @@
-# kklib
-research
