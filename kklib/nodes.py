@@ -674,7 +674,7 @@ class MultiHeadGlobalAttention(nn.Module):
         return self.out_proj([comb]), [attn_w,]
 
 
-class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
+class GLSTMMultiHeadAttentionLSTM(nn.Module):
     def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, shift_decoder_inputs=True, random_state=None, init=None, name=""):
         super(GBiLSTMMultiHeadAttentionLSTM, self).__init__()
         encoder_input_size = sum(list_of_encoder_input_sizes)
@@ -689,15 +689,10 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
         self.init = init
         self.name = name
 
-        #self.enc_rnn = GBiLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
-
         self.enc_rnn = GLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
 
-        #self.dec_rnn = GLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
         self.dec_rnn_cell = GLSTMCell([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
 
-        #self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size, hidden_size], [hidden_size, hidden_size],
-        #                                          hidden_size, random_state=random_state, init=init)
         self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size], [hidden_size],
                                                   hidden_size, n_attention_heads=n_attention_heads,
                                                   random_state=random_state, init=init)
@@ -705,11 +700,10 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
 
     def forward(self, list_of_encoder_inputs, list_of_decoder_inputs, decoder_initial_hidden, decoder_initial_cell, attention_init, input_mask=None, output_mask=None):
 
-        #hf, cf, hb, cb = self.enc_rnn(list_of_encoder_inputs, hf=None, cf=None, hb=None, cb=None, mask=input_mask)
         he, ce = self.enc_rnn(list_of_encoder_inputs, mask=input_mask)
 
         # this trick also ensures we work with input length 1 in generation, potentially...
-        # THIS WILL HAVE TO BE CHANGED BETWEEN TRAINING AND TEST, STATE IS PAIN
+        # THIS MIGHT HAVE TO BE CHANGED BETWEEN TRAINING AND TEST, STATE IS PAIN
         if self.shift_decoder_inputs:
             shifted = []
             for i in range(len(list_of_decoder_inputs)):
@@ -735,6 +729,77 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
             s_ = [shifted[k][i] for k in range(len(shifted))]
             h, c = self.dec_rnn_cell(s_ + [a_h], h, c, mask=output_mask[i])
             a_h, attn_info = self.attention([h], [he], [he], mask=input_mask)
+            all_h.append(h)
+            all_c.append(c)
+            all_a_h.append(a_h)
+            # assume we know the attention info outputs
+            all_attn_info.append(attn_info[0])
+        all_a_h = torch.stack(all_a_h)
+        all_attn_info = torch.stack(all_attn_info)
+        all_h = torch.stack(all_h)
+        all_c = torch.stack(all_c)
+        output = self.output_proj([all_a_h, all_h])
+        return output, all_h, all_c, all_a_h, all_attn_info
+
+    def make_inits(self, minibatch_size):
+        i_h, i_c = self.dec_rnn_cell.make_inits(minibatch_size)
+        return i_h, i_c, 0. * i_h
+
+class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
+    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, shift_decoder_inputs=True, random_state=None, init=None, name=""):
+        super(GBiLSTMMultiHeadAttentionLSTM, self).__init__()
+        encoder_input_size = sum(list_of_encoder_input_sizes)
+        self.encoder_input_size = encoder_input_size
+        decoder_input_size = sum(list_of_decoder_input_sizes)
+        self.decoder_input_size = decoder_input_size
+        self.hidden_size = hidden_size
+        self.n_attention_heads = n_attention_heads
+        self.shift_decoder_inputs = shift_decoder_inputs
+
+        self.random_state = random_state
+        self.init = init
+        self.name = name
+
+        self.enc_rnn = GBiLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
+
+        self.dec_rnn_cell = GLSTMCell([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
+
+        self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size, hidden_size], [hidden_size, hidden_size],
+                                                  hidden_size, n_attention_heads=n_attention_heads,
+                                                  random_state=random_state, init=init)
+        self.output_proj = GLinear([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
+
+    def forward(self, list_of_encoder_inputs, list_of_decoder_inputs, decoder_initial_hidden, decoder_initial_cell, attention_init, input_mask=None, output_mask=None):
+
+        hf, cf, hb, cb = self.enc_rnn(list_of_encoder_inputs, hf=None, cf=None, hb=None, cb=None, mask=input_mask)
+
+        # this trick also ensures we work with input length 1 in generation, potentially...
+        # THIS MIGHT HAVE TO BE CHANGED BETWEEN TRAINING AND TEST, STATE IS PAIN
+        if self.shift_decoder_inputs:
+            shifted = []
+            for i in range(len(list_of_decoder_inputs)):
+                d_ = list_of_decoder_inputs[i]
+                shift_ = 0 * torch.cat([d_, d_])
+                # starts with 0
+                shift_[1:d_.shape[0]] = d_[:-1]
+                shift_ = shift_[:d_.shape[0]]
+                shifted.append(shift_)
+        else:
+            shifted = list_of_decoder_inputs
+        # this is where teacher forcing dropout tricks could happen
+        # do RNN before, that then controls the attention distribution
+        all_h = []
+        all_c = []
+        all_a_h = []
+        all_attn_info = []
+        h = decoder_initial_hidden
+        c = decoder_initial_cell
+        a_h = attention_init
+
+        for i in range(shifted[0].shape[0]):
+            s_ = [shifted[k][i] for k in range(len(shifted))]
+            h, c = self.dec_rnn_cell(s_ + [a_h], h, c, mask=output_mask[i])
+            a_h, attn_info = self.attention([h], [hf, hb], [hf, hb], mask=input_mask)
             all_h.append(h)
             all_c.append(c)
             all_a_h.append(a_h)
