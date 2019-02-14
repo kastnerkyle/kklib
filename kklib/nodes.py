@@ -14,6 +14,12 @@ def _get_uuid():
     return str(uuid.uuid4())
 
 
+def softplus(x):
+    return nn.functional.softplus(x)
+
+def softmax(x):
+    return nn.functional.softmax(x, dim=-1)
+
 def sigmoid(x):
     return torch.sigmoid(x)
 
@@ -381,6 +387,47 @@ class GLinear(nn.Module):
         x = x.view(-1, last_axis)
         l_o = self.linear(x)
         return l_o.view(*list(x_orig.size())[:-1] + [self.output_size])
+
+
+class GCorrGMMAndBernoulli(nn.Module):
+    def __init__(self, list_of_input_sizes, output_size=2, n_components=10, sigma_eps=1E-4, random_state=None, init=None, name=""):
+        super(GCorrGMMAndBernoulli, self).__init__()
+        if random_state is None:
+            raise ValueError("random_state argument required for GLinear")
+        self.list_of_input_sizes = list_of_input_sizes
+        self.random_state = random_state
+        self.output_size = output_size
+        self.n_components = n_components
+        self.init = init
+        self.sigma_eps = sigma_eps
+        # mu of output_size for each component
+        # sigma of output_size for each component
+        # correlation for each component
+        # mixture coeffs for each component
+        # bernoulli output of dim 1
+        self.full_output_size = n_components * output_size + n_components * output_size + n_components + n_components + 1
+        self.proj =  GLinear(list_of_input_sizes,
+                             self.full_output_size,
+                             random_state=random_state,
+                             init=init)
+
+    def forward(self, list_of_inputs):
+        o = self.proj(list_of_inputs)
+        mus = o[..., :self.n_components * self.output_size]
+        mus = mus.view(mus.shape[0], mus.shape[1], self.n_components, self.output_size)
+
+        sigmas = o[..., self.n_components * self.output_size:2 * self.n_components * self.output_size]
+        sigmas = sigmas.view(sigmas.shape[0], sigmas.shape[1], self.n_components, self.output_size)
+        sigmas = softplus(sigmas) + self.sigma_eps
+
+        corrs = o[..., 2 * self.n_components * self.output_size:2 * self.n_components * self.output_size + self.n_components]
+        corrs = tanh(corrs)
+
+        log_coeffs = o[..., 2 * self.n_components * self.output_size + self.n_components:2 * self.n_components * self.output_size + self.n_components + self.n_components]
+
+        berns = o[..., -1][..., None]
+        berns = sigmoid(berns)
+        return mus, sigmas,  corrs, log_coeffs, berns
 
 
 class GLSTMCell(nn.Module):

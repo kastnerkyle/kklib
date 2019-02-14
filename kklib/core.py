@@ -553,12 +553,6 @@ def run_loop(saver_dict,
     valid_itr_steps_taken = 0
     overall_train_loss = []
     overall_valid_loss = []
-    if train_stateful_args != None:
-        print("stateful args???? oy")
-        from IPython import embed; embed(); raise ValueError()
-    if valid_stateful_args != None:
-        print("stateful args???? oy")
-        from IPython import embed; embed(); raise ValueError()
     # won't match exactly due to this - even after replaying itr stateful args may change
     # however, should be *close* since data is at least iterated in the same way...
     this_train_stateful_args = copy.deepcopy(train_stateful_args)

@@ -96,6 +96,8 @@ def _plot_attention(matrix, head, max_weight=None, ax=None):
 
 if len(attn.shape) > 3:
     for head in range(attn.shape[-1]):
-        _plot_attention(attn[:, :, 0, head].detach().numpy(), head)
+        # cut off the ends due to padding with ~
+        _plot_attention(attn[:-1, :-1, 0, head].detach().numpy(), head)
 else:
-    _plot_attention(attn[:, :, 0].detach().numpy(), 0)
+    # cut off the ends due to padding with ~
+    _plot_attention(attn[:-1, :-1, 0].detach().numpy(), 0)
