@@ -20,7 +20,7 @@ from config import *
 
 use_cuda = torch.cuda.is_available()
 if use_cuda:
-    DEVICE = "cuda"
+    DEVICE = "cuda:0"
 else:
     DEVICE = "cpu"
 """
@@ -48,6 +48,7 @@ itr = tbptt_list_iterator(trace_data, [char_data], batch_size, truncation_len,
 """
 
 random_state = np.random.RandomState(1345)
+rsync_fetch(fetch_iamondb, "leto01")
 iamondb = fetch_iamondb()
 trace_data = iamondb["data"]
 char_data = iamondb["target"]
@@ -108,7 +109,8 @@ def loop(itr, extras, stateful):
     target_coords = target_variable[..., :-1]
     step_loss = CorrelatedGMMAndBernoulliCost(mus, sigmas, corrs, log_coeffs, berns, target_coords, target_bernoullis)
     step_loss = target_mask * step_loss
-    loss = torch.mean(torch.mean(step_loss, dim=-1))
+    #loss = torch.sum(torch.mean(step_loss, dim=-1)) / torch.sum(target_mask)
+    loss = torch.sum(step_loss / torch.sum(target_mask))
 
     #from IPython import embed; embed(); raise ValueError()
     """
@@ -134,11 +136,11 @@ run_loop(saver_dict,
          loop, train_itr,
          loop, valid_itr,
          #continue_training=False,
-         n_steps=20000,
+         n_steps=30000,
          # minibatch size is 50
          n_train_steps_per=1000,
          train_stateful_args=stateful_args,
          valid_stateful_args=stateful_args,
          n_valid_steps_per=100,
-         status_every_s=5,
+         status_every_s=30,
          models_to_keep=5)

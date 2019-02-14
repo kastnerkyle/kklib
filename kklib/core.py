@@ -555,8 +555,10 @@ def run_loop(saver_dict,
     overall_valid_loss = []
     # won't match exactly due to this - even after replaying itr stateful args may change
     # however, should be *close* since data is at least iterated in the same way...
-    this_train_stateful_args = copy.deepcopy(train_stateful_args)
-    this_valid_stateful_args = copy.deepcopy(valid_stateful_args)
+    #this_train_stateful_args = copy.deepcopy(train_stateful_args)
+    #this_valid_stateful_args = copy.deepcopy(valid_stateful_args)
+    this_train_stateful_args = [tsa.clone() for tsa in train_stateful_args]
+    this_valid_stateful_args = [vsa.clone() for vsa in valid_stateful_args]
     last_status = time.time()
 
     model_saver = Saver(max_to_keep=models_to_keep)

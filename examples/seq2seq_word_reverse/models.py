@@ -36,6 +36,7 @@ class Model(nn.Module):
     def forward(self, x, y, dh, dc, a, input_mask, output_mask):
         e = self.encoder(x)
         d = self.decoder(y)
+        raise ValueError("Updated API, need to fix this example")
         output, h, c, oa, all_attn_info = self.attn([e], [d], dh, dc, a, input_mask=input_mask, output_mask=output_mask)
         return output, h, c, oa, all_attn_info
 

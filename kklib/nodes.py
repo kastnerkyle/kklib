@@ -17,31 +17,21 @@ def _get_uuid():
 def softplus(x):
     return nn.functional.softplus(x)
 
+
 def softmax(x):
     return nn.functional.softmax(x, dim=-1)
 
+
 def sigmoid(x):
     return torch.sigmoid(x)
-
-
-def Sigmoid(x):
-    return sigmoid(x)
 
 
 def tanh(x):
     return torch.tanh(x)
 
 
-def Tanh(x):
-    return tanh(x)
-
-
 def relu(x):
     return nn.functional.relu(x)
-
-
-def ReLU(x):
-    return relu(x)
 
 
 def np_zeros(shape):
@@ -390,7 +380,7 @@ class GLinear(nn.Module):
 
 
 class GCorrGMMAndBernoulli(nn.Module):
-    def __init__(self, list_of_input_sizes, output_size=2, n_components=10, sigma_eps=1E-4, random_state=None, init=None, name=""):
+    def __init__(self, list_of_input_sizes, output_size=2, n_components=20, sigma_eps=1E-4, random_state=None, init=None, name=""):
         super(GCorrGMMAndBernoulli, self).__init__()
         if random_state is None:
             raise ValueError("random_state argument required for GLinear")
@@ -502,10 +492,11 @@ class GLSTMCell(nn.Module):
         # this was f + 1. in the tensorflow versions instead of just setting in init bias, might be important?
         c = sigmoid(f) * previous_cell + sigmoid(i) * pj
         if mask is not None:
-            mask = mask.type(torch.FloatTensor)
+            mask = mask.type(c.dtype)
             c = mask[:, None] * c + (1 - mask[:, None]) * previous_cell
         h = sigmoid(o) * tanh(c)
         if mask is not None:
+            mask = mask.type(h.dtype)
             h = mask[:, None] * h + (1 - mask[:, None]) * h
         return (h, c)
 
@@ -545,6 +536,10 @@ class GLSTM(nn.Module):
             p_c = 0. * p[0, :, :self.num_units]
         else:
             p_c = c
+        if mask is None:
+            mask = 1. + 0. * p[:, :, 0]
+            mask = mask.type(p.dtype)
+
         all_h = []
         all_c = []
         for i in range(p.shape[0]):
@@ -605,6 +600,10 @@ class GBiLSTM(nn.Module):
             p_cb = 0. * pb[0, :, :self.num_units]
         else:
             p_cb = cb
+
+        if mask is None:
+            mask = 1. + 0. * pf[:, :, 0]
+            mask = mask.type(pf.dtype)
 
         # pf and pb are the same shape
         flip_pb = 0. * pb
@@ -736,14 +735,13 @@ class GLSTMMultiHeadAttentionLSTM(nn.Module):
         self.init = init
         self.name = name
 
-        self.enc_rnn = GLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
+        self.enc_rnn = GLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init)
 
-        self.dec_rnn_cell = GLSTMCell([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
+        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init)
 
         self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size], [hidden_size],
                                                   hidden_size, n_attention_heads=n_attention_heads,
                                                   random_state=random_state, init=init)
-        self.output_proj = GLinear([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
 
     def forward(self, list_of_encoder_inputs, list_of_decoder_inputs, decoder_initial_hidden, decoder_initial_cell, attention_init, input_mask=None, output_mask=None):
 
@@ -785,12 +783,12 @@ class GLSTMMultiHeadAttentionLSTM(nn.Module):
         all_attn_info = torch.stack(all_attn_info)
         all_h = torch.stack(all_h)
         all_c = torch.stack(all_c)
-        output = self.output_proj([all_a_h, all_h])
-        return output, all_h, all_c, all_a_h, all_attn_info
+        return all_h, all_c, all_a_h, all_attn_info
 
     def make_inits(self, minibatch_size):
         i_h, i_c = self.dec_rnn_cell.make_inits(minibatch_size)
-        return i_h, i_c, 0. * i_h
+        return [i_h, i_c, 0. * i_h]
+
 
 class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
     def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, shift_decoder_inputs=True, random_state=None, init=None, name=""):
@@ -807,9 +805,9 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
         self.init = init
         self.name = name
 
-        self.enc_rnn = GBiLSTM([hidden_size], hidden_size, random_state=self.random_state, init=init)
+        self.enc_rnn = GBiLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init)
 
-        self.dec_rnn_cell = GLSTMCell([hidden_size, hidden_size], hidden_size, random_state=self.random_state, init=init)
+        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init)
 
         self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size, hidden_size], [hidden_size, hidden_size],
                                                   hidden_size, n_attention_heads=n_attention_heads,
@@ -856,9 +854,8 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
         all_attn_info = torch.stack(all_attn_info)
         all_h = torch.stack(all_h)
         all_c = torch.stack(all_c)
-        output = self.output_proj([all_a_h, all_h])
-        return output, all_h, all_c, all_a_h, all_attn_info
+        return all_h, all_c, all_a_h, all_attn_info
 
     def make_inits(self, minibatch_size):
         i_h, i_c = self.dec_rnn_cell.make_inits(minibatch_size)
-        return i_h, i_c, 0. * i_h
+        return [i_h, i_c, 0. * i_h]
