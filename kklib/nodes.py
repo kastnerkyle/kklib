@@ -14,6 +14,10 @@ def _get_uuid():
     return str(uuid.uuid4())
 
 
+def exp(x):
+    return torch.exp(x)
+
+
 def softplus(x):
     return nn.functional.softplus(x)
 
@@ -433,6 +437,9 @@ class GLSTMCell(nn.Module):
         name_proj = name + "_lstm_proj"
         self.name = name
         self.cell_dropout_keep_rate = cell_dropout_keep_rate
+        if cell_dropout_keep_rate is None:
+            cell_dropout_keep_rate = 1.
+        self._cell_dropout_rate = 1. - cell_dropout_keep_rate
 
         if init is None:
             inp_init = None
@@ -473,6 +480,7 @@ class GLSTMCell(nn.Module):
                                  random_state=random_state,
                                  name=name_proj, init=init)
         self.lstm_proj._set_weights_and_biases(comb_w, comb_b)
+        self.cell_drop_layer = nn.Dropout(p=self._cell_dropout_rate)
 
     def _slice(self, arr, size, index, axis=-1):
         if axis != -1:
@@ -486,7 +494,7 @@ class GLSTMCell(nn.Module):
         f = self._slice(l_p, self.num_units, 2)
         o = self._slice(l_p, self.num_units, 3)
         if self.cell_dropout_keep_rate is not None:
-            raise ValueError("cell_dropout NYI")
+            pj = self.cell_drop_layer(tanh(j))
         else:
             pj = tanh(j)
         # this was f + 1. in the tensorflow versions instead of just setting in init bias, might be important?
@@ -520,7 +528,7 @@ class GLSTM(nn.Module):
         self.cell_dropout_keep_rate = cell_dropout_keep_rate
 
         self.proj = GLinear(list_of_input_sizes, num_units, random_state=self.random_state, init=proj_init)
-        self.cell = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init)
+        self.cell = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
     def forward(self, list_of_inputs, h=None, c=None, mask=None):
         """
@@ -573,8 +581,8 @@ class GBiLSTM(nn.Module):
 
         self.projf = GLinear(list_of_input_sizes, num_units, random_state=self.random_state, init=proj_init)
         self.projb = GLinear(list_of_input_sizes, num_units, random_state=self.random_state, init=proj_init)
-        self.cellf = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init)
-        self.cellb = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init)
+        self.cellf = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init, cell_dropout_keep_rate=cell_dropout_keep_rate)
+        self.cellb = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
     def forward(self, list_of_inputs, hf=None, cf=None, hb=None, cb=None, mask=None):
         # do it the fully proper way
@@ -664,6 +672,7 @@ class GBiLSTM(nn.Module):
 
 class MultiHeadGlobalAttention(nn.Module):
     def __init__(self, list_of_query_sizes, list_of_key_sizes, list_of_value_sizes, hidden_size, n_attention_heads=8, random_state=None, init=None, name=""):
+        raise ValueError("DO IT LIKE GAUSSIAN ATTN?")
         # THIS CLASS IS NOT APPROPRIATE FOR TRANSFORMER YET
         # http://phontron.com/class/nn4nlp2017/assets/slides/nn4nlp-09-attention.pdf
         # http://nlp.seas.harvard.edu/2018/04/03/attention.html#attention
@@ -720,8 +729,187 @@ class MultiHeadGlobalAttention(nn.Module):
         return self.out_proj([comb]), [attn_w,]
 
 
+class GGaussianAttentionCell(nn.Module):
+    def __init__(self, list_of_query_sizes, list_of_key_sizes, hidden_size, n_components=10, step_op="exp", attention_scale=1., softmax_energy=False, cell_dropout_keep_rate=None, random_state=None, init=None, name=""):
+        # only query key
+        # no query, key, value here
+        super(GGaussianAttentionCell, self).__init__()
+        self.random_state = random_state
+        query_dim = sum(list_of_query_sizes)
+        self.query_dim = query_dim
+        key_dim = sum(list_of_key_sizes)
+        self.key_dim = key_dim
+        self.n_components = n_components
+
+        if step_op == "exp":
+            self.step_op = exp
+        elif step_op == "softplus":
+            self.step_op = softplus
+
+        self.attention_scale = attention_scale
+        self.softmax_energy = softmax_energy
+        self.cell_dropout_keep_rate = cell_dropout_keep_rate
+
+        self.attn_cell = GLSTMCell(list_of_query_sizes + [self.key_dim,], hidden_size, random_state=random_state, init=init,
+                                   cell_dropout_keep_rate=cell_dropout_keep_rate)
+        self.proj = GLinear([hidden_size], 3 * n_components, random_state=random_state, init=init)
+        # convenience projection
+        self.key_proj = GLinear(list_of_key_sizes, key_dim, random_state=random_state, init=init)
+
+    def _calc_phi(self, lk_t, la_t, lb_t, lu):
+        la_t = la_t[..., None]
+        lb_t = lb_t[..., None]
+        lk_t = lk_t[..., None]# + np.log(self.attention_scale)
+        if not self.softmax_energy:
+            # instant nan
+            core = ((lk_t - lu) ** 2)
+            phi = exp(-core * lb_t) * la_t
+            # use softplus? no longer technically gaussian in that case...
+            #phi = softplus(-((lk_t - lu) ** 2) * lb_t) * la_t
+            #phi = softmax(-((lk_t - lu) ** 2) * lb_t * la_t)
+        else:
+            raise ValueError("softmax energy still needs fixing")
+            phi = softmax(-((lk_t - lu) ** 2) * lb_t) * la_t
+        # phi is minibatch, n_components, conditioning_timesteps
+        phi = torch.sum(phi, dim=1)[:, None]
+        # now phi is minibatch, 1, conditioning_timesteps
+        return phi
+
+    def forward(self, list_of_queries, list_of_keys, previous_hidden, previous_cell, previous_attention_position, previous_attention_weight,
+                query_mask=None, key_mask=None):
+        # returns h, c, k, w, phi
+
+        # keys is the FULL conditioning tensor
+        n_minibatch = list_of_queries[0].shape[0]
+        h_o, c_o = self.attn_cell(list_of_queries + [previous_attention_weight], previous_hidden, previous_cell)
+        ret = self.proj([h_o])
+        a_t = ret[..., :self.n_components]
+        b_t = ret[..., self.n_components:2 * self.n_components]
+        k_t = ret[..., 2 * self.n_components:]
+
+        a_t = torch.exp(a_t)
+        b_t = torch.exp(b_t)
+
+        k_tm1 = previous_attention_position
+        step_size = self.attention_scale * self.step_op(k_t)
+        k_t = k_tm1 + step_size
+
+        ctx = self.key_proj(list_of_keys)
+        u = torch.arange(ctx.shape[0], dtype=ctx.dtype, device=ctx.device)
+        u = u[None, None, :]
+        # phi is minibatch, 1, conditioning_timesteps
+        phi_t = self._calc_phi(k_t, a_t, b_t, u)
+        if key_mask is None:
+            key_mask = 0. * ctx[..., 0] + 1.
+        key_mask = key_mask.type(ctx.dtype)
+        w_t_pre = phi_t * ctx.transpose(1, 2).transpose(2, 0)
+        w_t_masked = w_t_pre * key_mask.transpose(1, 0)[:, None]
+        w_t = torch.sum(w_t_masked, dim=-1)[:, None]
+        """
+        # tf version
+        if conditioning_mask is not None:
+            w_t_pre = phi_t * tf.transpose(ctx, (1, 2, 0))
+            w_t_masked = w_t_pre * (tf.transpose(ctx_mask, (1, 0))[:, None])
+            w_t = tf.reduce_sum(w_t_masked, axis=-1)[:, None]
+        else:
+            w_t = tf.matmul(phi_t, tf.transpose(ctx, (1, 0, 2)))
+        """
+        # now minibatch, input_timesteps
+        phi_t = phi_t[:, 0]
+        # now minibatch, context features
+        w_t = w_t[:, 0]
+        return h_o, c_o, k_t, w_t, phi_t
+
+    def make_inits(self, minibatch_size):
+        h_i, c_i = self.attn_cell.make_inits(minibatch_size)
+        att_w_init, att_k_init = make_torch_zeros(minibatch_size, [self.query_dim, self.n_components])
+        return [h_i, c_i, att_k_init, att_w_init]
+
+
+class GGaussianAttentionLSTM(nn.Module):
+    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_components=10, step_op="exp", attention_scale=1., cell_dropout_keep_rate=None, shift_decoder_inputs=False, random_state=None, init=None, name=""):
+        super(GGaussianAttentionLSTM, self).__init__()
+        encoder_input_size = sum(list_of_encoder_input_sizes)
+        self.encoder_input_size = encoder_input_size
+        decoder_input_size = sum(list_of_decoder_input_sizes)
+        self.decoder_input_size = decoder_input_size
+        self.hidden_size = hidden_size
+        self.n_components = n_components
+        self.step_op = step_op
+        self.attention_scale = attention_scale
+        self.cell_dropout_keep_rate = cell_dropout_keep_rate
+        self.shift_decoder_inputs = shift_decoder_inputs
+
+        self.random_state = random_state
+        self.init = init
+        self.name = name
+
+        self.attention_cell = GGaussianAttentionCell(list_of_decoder_input_sizes, list_of_encoder_input_sizes,
+                                                     hidden_size, n_components=n_components,
+                                                     step_op=step_op,
+                                                     attention_scale=attention_scale,
+                                                     cell_dropout_keep_rate=cell_dropout_keep_rate,
+                                                     random_state=random_state, init=init)
+
+    def forward(self, list_of_encoder_inputs, list_of_decoder_inputs, decoder_initial_hidden, decoder_initial_cell, attention_init_position, attention_init_weight, input_mask=None, output_mask=None):
+
+        # this trick also ensures we work with input length 1 in generation, potentially...
+        # THIS MIGHT HAVE TO BE CHANGED BETWEEN TRAINING AND TEST, STATE IS PAIN
+        if self.shift_decoder_inputs:
+            shifted = []
+            for i in range(len(list_of_decoder_inputs)):
+                d_ = list_of_decoder_inputs[i]
+                shift_ = 0 * torch.cat([d_, d_])
+                # starts with 0
+                shift_[1:d_.shape[0]] = d_[:-1]
+                shift_ = shift_[:d_.shape[0]]
+                shifted.append(shift_)
+        else:
+            shifted = list_of_decoder_inputs
+
+        # this is where teacher forcing dropout tricks could happen
+        # do RNN before, that then controls the attention distribution
+        all_h = []
+        all_c = []
+        all_a_k = []
+        all_a_w = []
+        all_a_phi = []
+        h = decoder_initial_hidden
+        c = decoder_initial_cell
+        a_k = attention_init_position
+        a_w = attention_init_weight
+
+        for i in range(shifted[0].shape[0]):
+            s_ = [shifted[k][i] for k in range(len(shifted))]
+            #a_h, attn_info = self.attention([h], [he],  mask=input_mask)
+            h_t, c_t, a_k_t, a_w_t, a_phi_t = self.attention_cell(s_, list_of_encoder_inputs,
+                                                                  h, c, a_k, a_w,
+                                                                  query_mask=output_mask,
+                                                                  key_mask=input_mask)
+            h = h_t
+            c = c_t
+            a_k = a_k_t
+            a_w = a_w_t
+            a_phi = a_phi_t
+
+            all_h.append(h)
+            all_c.append(c)
+            all_a_k.append(a_k)
+            all_a_w.append(a_w)
+            all_a_phi.append(a_phi)
+        all_h = torch.stack(all_h)
+        all_c = torch.stack(all_c)
+        all_a_k = torch.stack(all_a_k)
+        all_a_w = torch.stack(all_a_w)
+        all_a_phi = torch.stack(all_a_phi)
+        return all_h, all_c, all_a_k, all_a_w, all_a_phi
+
+    def make_inits(self, minibatch_size):
+        return self.attention_cell.make_inits(minibatch_size)
+
+
 class GLSTMMultiHeadAttentionLSTM(nn.Module):
-    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, shift_decoder_inputs=True, random_state=None, init=None, name=""):
+    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, cell_dropout_keep_rate=None, shift_decoder_inputs=False, random_state=None, init=None, name=""):
         super(GBiLSTMMultiHeadAttentionLSTM, self).__init__()
         encoder_input_size = sum(list_of_encoder_input_sizes)
         self.encoder_input_size = encoder_input_size
@@ -729,15 +917,16 @@ class GLSTMMultiHeadAttentionLSTM(nn.Module):
         self.decoder_input_size = decoder_input_size
         self.hidden_size = hidden_size
         self.n_attention_heads = n_attention_heads
+        self.cell_dropout_keep_rate = cell_dropout_keep_rate
         self.shift_decoder_inputs = shift_decoder_inputs
 
         self.random_state = random_state
         self.init = init
         self.name = name
 
-        self.enc_rnn = GLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init)
+        self.enc_rnn = GLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
-        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init)
+        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
         self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size], [hidden_size],
                                                   hidden_size, n_attention_heads=n_attention_heads,
@@ -791,7 +980,7 @@ class GLSTMMultiHeadAttentionLSTM(nn.Module):
 
 
 class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
-    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, shift_decoder_inputs=True, random_state=None, init=None, name=""):
+    def __init__(self, list_of_encoder_input_sizes, list_of_decoder_input_sizes, hidden_size, n_attention_heads=8, cell_dropout_keep_rate=None, shift_decoder_inputs=False, random_state=None, init=None, name=""):
         super(GBiLSTMMultiHeadAttentionLSTM, self).__init__()
         encoder_input_size = sum(list_of_encoder_input_sizes)
         self.encoder_input_size = encoder_input_size
@@ -799,15 +988,16 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
         self.decoder_input_size = decoder_input_size
         self.hidden_size = hidden_size
         self.n_attention_heads = n_attention_heads
+        self.cell_dropout_keep_rate = cell_dropout_keep_rate
         self.shift_decoder_inputs = shift_decoder_inputs
 
         self.random_state = random_state
         self.init = init
         self.name = name
 
-        self.enc_rnn = GBiLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init)
+        self.enc_rnn = GBiLSTM(list_of_encoder_input_sizes, hidden_size, random_state=self.random_state, init=init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
-        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init)
+        self.dec_rnn_cell = GLSTMCell(list_of_decoder_input_sizes + [hidden_size,], hidden_size, random_state=self.random_state, init=init, cell_dropout_keep_rate=cell_dropout_keep_rate)
 
         self.attention = MultiHeadGlobalAttention([hidden_size], [hidden_size, hidden_size], [hidden_size, hidden_size],
                                                   hidden_size, n_attention_heads=n_attention_heads,
