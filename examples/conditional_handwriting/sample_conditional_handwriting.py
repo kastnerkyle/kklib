@@ -241,6 +241,7 @@ attn_k = np.stack(predicted_attn_k) # timesteps batch attn_components
 
 predicted_components = np.concatenate(predicted_components, axis=0)
 
+# density plots
 n_plots = 5
 for n in range(n_plots):
     this_stop = predicted_stops[n]
@@ -284,20 +285,22 @@ for n in range(n_plots):
     plt.axis("off")
     plt.savefig("plot_density_conditional_handwriting{}.png".format(n))
 
-"""
-# attn plots...
-attn_weights = np.concatenate(predicted_coords, axis=0)
+# attn plots
+
 n_plots = 5
 for n in range(n_plots):
     fig, ax = plt.subplots(1, 1)
-    for stroke in split_strokes(cumsum(traces[:, n])):
-        plt.plot(stroke[:, 0], -stroke[:, 1])
-    ax.set_title("sampled {}: {}".format(n, chars))
-    ax.set_aspect('equal')
-    plt.savefig("plot_sample_conditional_handwriting{}.png".format(n))
-print("Plotted {} examples, as 'plot_sample_handwriting*.png'".format(n_plots))
-"""
+    this_stop = predicted_stops[n]
+    this_phi = attn_phi[:this_stop, n].T[::-1, :]
+    plt.figure()
+    plt.imshow(this_phi, interpolation='nearest', aspect='auto', cmap=cm.jet)
+    plt.yticks(np.arange(0, len(chars[:-1]) + 1))
+    plt.axes().set_yticklabels(list(' ' + chars[:-1][::-1]), rotation='vertical', fontsize=8)
+    plt.grid(False)
+    ax.set_aspect("equal")
+    plt.savefig("plot_attention_conditional_handwriting{}.png".format(n))
 
+# stroke plots
 predicted_coords[-1][..., 2] = 1.
 traces = np.concatenate(predicted_coords, axis=0)
 strokes = np.concatenate(predicted_coords, axis=0)
@@ -313,43 +316,4 @@ for n in range(n_plots):
     ax.set_title("sampled {}: {}".format(n, chars[:-1]))
     ax.set_aspect('equal')
     plt.savefig("plot_sample_conditional_handwriting{}.png".format(n))
-print("Plotted {} examples, as 'plot_sample_handwriting*.png'".format(n_plots))
-
-'''
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-def _plot_attention(matrix, head, max_weight=None, ax=None):
-       """Draw Hinton diagram for visualizing a weight matrix."""
-       # https://talbaumel.github.io/blog/attention/
-       ax = ax if ax is not None else plt.gca()
-
-       if not max_weight:
-           max_weight = 2**np.ceil(np.log(np.abs(matrix).max())/np.log(2))
-
-       ax.patch.set_facecolor('gray')
-       ax.set_aspect('equal', 'box')
-       ax.xaxis.set_major_locator(plt.NullLocator())
-       ax.yaxis.set_major_locator(plt.NullLocator())
-
-       for (x, y), w in np.ndenumerate(matrix):
-           color = 'white' if w > 0 else 'black'
-           size = np.sqrt(np.abs(w))
-           rect = plt.Rectangle([x - size / 2, y - size / 2], size, size,
-                                facecolor=color, edgecolor=color)
-           ax.add_patch(rect)
-
-       ax.autoscale_view()
-       ax.invert_yaxis()
-       plt.savefig("attn{}.png".format(head))
-       #plt.show()
-
-if len(attn.shape) > 3:
-    for head in range(attn.shape[-1]):
-        # cut off the ends due to padding with ~
-        _plot_attention(attn[:-1, :-1, 0, head].detach().numpy(), head)
-else:
-    # cut off the ends due to padding with ~
-    _plot_attention(attn[:-1, :-1, 0].detach().numpy(), 0)
-'''
+print("Plotted {} examples, as 'plot_*_handwriting*.png'".format(n_plots))
