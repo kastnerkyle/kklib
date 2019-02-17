@@ -303,11 +303,6 @@ for n in range(n_plots):
 # stroke plots
 predicted_coords[-1][..., 2] = 1.
 traces = np.concatenate(predicted_coords, axis=0)
-strokes = np.concatenate(predicted_coords, axis=0)
-epsilon = 1e-8
-strokes[:, :2] = np.cumsum(strokes[:, :2], axis=0)
-minx, maxx = np.min(strokes[:, 0]), np.max(strokes[:, 0])
-miny, maxy = np.min(strokes[:, 1]), np.max(strokes[:, 1])
 for n in range(n_plots):
     fig, ax = plt.subplots(1, 1)
     this_stop = predicted_stops[n]
