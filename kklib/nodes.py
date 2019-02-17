@@ -1075,9 +1075,11 @@ class GSequenceConv1dStack(nn.Module):
         name_b = name + "_b"
 
         if not use_batch_norm:
-            raise ValueError("Currently only support batch norm")
+            raise ValueError("Currently only support use_batch_norm=True")
         if not residual:
-            raise ValueError("Currently only support residual")
+            raise ValueError("Currently only support residual=True")
+        if activation != "relu":
+            raise ValueError("Currently only support relu activation")
 
         # * len_kernel_sizes makes the residual parts much easier
         self.pre_proj = GLinear(list_of_input_sizes, len(kernel_sizes) * output_size, init=init, scale=scale, random_state=random_state)
