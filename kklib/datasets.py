@@ -317,3 +317,31 @@ def rsync_fetch(fetch_func, machine_to_fetch_from, *args, **kwargs):
             print("unknown error {}".format(e))
         r = fetch_func(*args, **kwargs)
     return r
+
+
+def fetch_ljspeech(path="/Tmp/kastner/lj_speech/LJSpeech-1.0/"):
+    if not path.endswith(os.sep):
+        path = path + os.sep
+
+    if not os.path.exists(path + "wavs"):
+        e = IOError("No wav files found in {}, under {}".format(path, path + "wavs"), None, path + "wavs")
+        raise e
+    if not os.path.exists(path + "txts"):
+        e = IOError("No txt files found in {}, under {}".format(path, path + "txts"), None, path + "txts")
+        raise e
+    if not os.path.exists(path + "phones"):
+        e = IOError("No phone files found in {}, under {}".format(path, path + "phones"), None, path + "phones")
+        raise e
+    if not os.path.exists(path + "gentle_json"):
+        e = IOError("No phone files found in {}, under {}".format(path, path + "phones"), None, path + "phones")
+        raise e
+    wavfiles = [path + "wavs/" + ff for ff in os.listdir(path + "wavs/")]
+    txtfiles = [path + "txts/" + ff for ff in os.listdir(path + "txts/")]
+    phonefiles = [path + "phones/" + ff for ff in os.listdir(path + "phones/")]
+    jsonfiles = [path + "gentle_json/" + ff for ff in os.listdir(path + "gentle_json/")]
+    d = {}
+    d["wavfiles"] = wavfiles
+    d["txtfiles"] = txtfiles
+    d["phonefiles"] = phonefiles
+    d["jsonfiles"] = jsonfiles
+    return d

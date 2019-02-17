@@ -31,11 +31,11 @@ class Model(nn.Module):
                               cell_dropout_keep_rate=cell_dropout_keep_rate, random_state=self.random_state, init=init)
         self.output_proj = GCorrGMMAndBernoulli([hidden_size], random_state=self.random_state, init=init)
 
-    def forward(self, x, y, attn_h_i, attn_c_i, attn_k_i, attn_w_i, h1_i, c1_i, h2_i, c2_i, enc_input_mask, dec_input_mask):
-        e = self.encoder(x)
+    def forward(self, enc_in, dec_in, attn_h_i, attn_c_i, attn_k_i, attn_w_i, h1_i, c1_i, h2_i, c2_i, enc_input_mask, dec_input_mask):
+        e = self.encoder(enc_in)
         p_e = self.proje1([e])
 
-        p_d1 = self.projd1([y])
+        p_d1 = self.projd1([dec_in])
 
         attn_h, attn_c, attn_k, attn_w, attn_phi = self.attn([p_e], [p_d1], attn_h_i, attn_c_i, attn_k_i, attn_w_i, input_mask=enc_input_mask, output_mask=dec_input_mask)
         h1, c1 = self.dec_rnn1([p_d1, attn_w, attn_h], h1_i, c1_i, mask=dec_input_mask)

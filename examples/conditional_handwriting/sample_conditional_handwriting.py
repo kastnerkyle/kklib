@@ -153,20 +153,20 @@ for i in range(sample_len):
     h2 = o[12]
     c2 = o[13]
 
-    mus = mus.detach().numpy()[-1]
-    sigmas = sigmas.detach().numpy()[-1]
-    log_coeffs = log_coeffs.detach().numpy()[-1]
+    mus = mus.detach().cpu().numpy()[-1]
+    sigmas = sigmas.detach().cpu().numpy()[-1]
+    log_coeffs = log_coeffs.detach().cpu().numpy()[-1]
     coeffs = numpy_softmax(log_coeffs)
     # all the above are now 3D, minibatch_size x n_components x something
-    corrs = corrs.detach().numpy()[-1]
+    corrs = corrs.detach().cpu().numpy()[-1]
     # corrs is 2D, minibatch_size x n_components
-    berns = berns.detach().numpy()[-1]
+    berns = berns.detach().cpu().numpy()[-1]
     # berns is 2D, minibatch_size x 1
 
     # get attn information for plots
-    attn_k_np = attn_k.detach().numpy()[-1]
-    attn_w_np = attn_w.detach().numpy()[-1]
-    attn_phi_np = attn_phi.detach().numpy()[-1]
+    attn_k_np = attn_k.detach().cpu().numpy()[-1]
+    attn_w_np = attn_w.detach().cpu().numpy()[-1]
+    attn_phi_np = attn_phi.detach().cpu().numpy()[-1]
     predicted_attn_k.append(attn_k_np)
     predicted_attn_w.append(attn_w_np)
     predicted_attn_phi.append(attn_phi_np)

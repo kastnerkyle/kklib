@@ -342,7 +342,7 @@ def make_torch_zeros(in_dim, out_dims):
 
 
 class GLinear(nn.Module):
-    def __init__(self, list_of_input_sizes, output_size, random_state=None, init=None, name=""):
+    def __init__(self, list_of_input_sizes, output_size, random_state=None, init=None, scale="default", name=""):
         super(GLinear, self).__init__()
         if random_state is None:
             raise ValueError("random_state argument required for GLinear")
@@ -781,6 +781,7 @@ class GGaussianAttentionCell(nn.Module):
 
         # keys is the FULL conditioning tensor
         n_minibatch = list_of_queries[0].shape[0]
+
         h_o, c_o = self.attn_cell(list_of_queries + [previous_attention_weight], previous_hidden, previous_cell)
         ret = self.proj([h_o])
         a_t = ret[..., :self.n_components]
@@ -822,7 +823,7 @@ class GGaussianAttentionCell(nn.Module):
 
     def make_inits(self, minibatch_size):
         h_i, c_i = self.attn_cell.make_inits(minibatch_size)
-        att_w_init, att_k_init = make_torch_zeros(minibatch_size, [self.query_dim, self.n_components])
+        att_w_init, att_k_init = make_torch_zeros(minibatch_size, [self.key_dim, self.n_components])
         return [h_i, c_i, att_k_init, att_w_init]
 
 
@@ -1049,3 +1050,124 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
     def make_inits(self, minibatch_size):
         i_h, i_c = self.dec_rnn_cell.make_inits(minibatch_size)
         return [i_h, i_c, 0. * i_h]
+
+
+class GSequenceConv1dStack(nn.Module):
+    def __init__(self, list_of_input_sizes, output_size, n_stacks=1, residual=True,
+                 activation="relu",
+                 kernel_sizes=[(1, 1,), (3, 3), (5, 5)],
+                 border_mode="same",
+                 use_batch_norm=True,
+                 init=None,
+                 scale="default",
+                 name="",
+                 random_state=None):
+        super(GSequenceConv1dStack, self).__init__()
+        input_size = sum(list_of_input_sizes)
+        self.input_size = input_size
+        self.init = init
+        self.use_batch_norm = use_batch_norm
+        self.kernel_sizes = kernel_sizes
+        self.n_stacks = n_stacks
+        if name == "":
+            name = "GSequenceConv1dStack"
+        name_w = name + "_w"
+        name_b = name + "_b"
+
+        if not use_batch_norm:
+            raise ValueError("Currently only support batch norm")
+        if not residual:
+            raise ValueError("Currently only support residual")
+
+        # * len_kernel_sizes makes the residual parts much easier
+        self.pre_proj = GLinear(list_of_input_sizes, len(kernel_sizes) * output_size, init=init, scale=scale, random_state=random_state)
+        self.post_proj = GLinear([len(kernel_sizes) * output_size], output_size, init=init, scale=scale, random_state=random_state)
+
+        self.stack_convs = nn.ModuleList()
+        self.stack_bns = nn.ModuleList()
+        # should technically reverse it so that first elem is stack 0, though it doesn't matter here
+        for n in range(n_stacks):
+            self.layer_convs = nn.ModuleList()
+            self.layer_bns = nn.ModuleList()
+            # reverse it so the order is same as specified
+            sz = len(kernel_sizes) * output_size
+            for kernel_size in kernel_sizes[::-1]:
+                if kernel_size[0] != kernel_size[1]:
+                    raise ValueError("Currently only accepts square kernel definitions, for width 5 kernel use (5,5) etc")
+                if border_mode != "same":
+                    raise ValueError("Only support border_mode='same' currently")
+                if kernel_size[0] % 2 != 0:
+                    pad = kernel_size[0] // 2
+                conv = nn.Conv1d(sz, output_size, kernel_size[0], 1, padding=pad)
+                # sz because this is after the stacking
+                input_width = 1 # ? why is this needed...
+                input_height = 1 # ? why is this needed...
+                w = make_torch_weights((sz, input_width, input_height),
+                                       [(output_size, kernel_size[0], kernel_size[1])],
+                                       init=init,
+                                       scale=scale,
+                                       random_state=random_state, name=name_w)
+                b = make_torch_biases([output_size], name=name_b)
+                self._set_conv_weights_and_biases(conv, w[0], b[0])
+                self.layer_convs.append(conv)
+            bn = nn.BatchNorm1d(sz)
+            self.stack_convs.append(self.layer_convs)
+            self.stack_bns.append(bn)
+
+    def _set_conv_weights_and_biases(self, conv, w, b):
+        """
+        weights of shape (h, w, in, out)
+        conv bias of shape (out_dim,)
+        """
+        # conv weights stored as 
+        # out, in, h, w
+        # conv bias is
+        # out
+        conv.weight.data = w.transpose(3, 0).transpose(1, 2).transpose(2, 3).contiguous()[..., 0] #w.transpose(3, 2, 0, 1).contiguous()
+        conv.bias.data = b.contiguous()
+
+    def forward(self, list_of_inputs, mask=None):
+        mask = mask.type(list_of_inputs[0].dtype)
+        c = self.pre_proj(list_of_inputs) * mask[..., None]
+        # assuming they come in as length, batch, features
+        # now to N C L
+        prev_layer = c.transpose(0, 1).transpose(1, 2)
+        for ii in range(self.n_stacks):
+            cs = []
+            for jj, ks in enumerate(self.kernel_sizes):
+                c = self.stack_convs[ii][jj](prev_layer) * mask.transpose(1, 0)[:, None]
+                cs.append(c)
+            layer = torch.cat(cs, dim=1)
+            bn_l = self.stack_bns[ii](layer)
+            r_l = relu(bn_l)
+            prev_layer = prev_layer + r_l
+        prev_layer = prev_layer.transpose(0, 1).transpose(0, 2).contiguous() * mask[..., None]
+        return self.post_proj([prev_layer])
+
+    """
+    c = Conv2d(tlist, list_of_input_dims, len(kernel_sizes) * num_feature_maps,
+               kernel_size=(1, 1),
+               name=name + "_convpre", random_state=random_state,
+               border_mode=border_mode, init=init, scale=scale, biases=biases,
+               bias_offset=bias_offset, strict=strict)
+    prev_layer = c
+    for ii in range(n_stacks):
+        cs = []
+        for jj, ks in enumerate(kernel_sizes):
+            c = Conv2d([prev_layer], [len(kernel_sizes) * num_feature_maps], num_feature_maps,
+                       kernel_size=ks,
+                       name=name + "_conv{}_ks{}".format(ii, jj), random_state=random_state,
+                       border_mode=border_mode, init=init, scale=scale, biases=biases,
+                       bias_offset=bias_offset, strict=strict)
+            cs.append(c)
+        layer = tf.concat(cs, axis=-1)
+        bn_l = BatchNorm2d(layer, batch_norm_flag, name="bn_conv{}".format(ii))
+        r_l = ReLU(bn_l)
+        prev_layer += r_l
+    post = Conv2d([prev_layer], [len(kernel_sizes) * num_feature_maps], num_feature_maps,
+                   kernel_size=(1, 1),
+                   name=name + "_convpost", random_state=random_state,
+                   border_mode=border_mode, init=init, scale=scale, biases=biases,
+                   bias_offset=bias_offset, strict=strict)
+    return tf.transpose(post[:, 0], (1, 0, 2))
+    """
