@@ -88,22 +88,31 @@ c1_i = Variable(c1_i).to(DEVICE)
 h2_i = Variable(h2_i).to(DEVICE)
 c2_i = Variable(c2_i).to(DEVICE)
 
-sample_len = 500
 coords = np.array([0., 0., 1.])
 coords = coords[None] * np.ones((minibatch_size, 1))
 coords = coords[None]
 coords_mask = 0. * coords[:, :, 0] + 1.
 
 predicted_coords = [coords]
+predicted_components = []
+predicted_stops = [-1 for _ in range(minibatch_size)]
+
 predicted_attn_k = []
 predicted_attn_w = []
 predicted_attn_phi = []
+predicted_mus = []
+predicted_sigmas = []
+predicted_coeffs = []
+predicted_corrs = []
+predicted_berns = []
 
 teacher_force_coords = trace_data[0][:, None] * np.ones((1, minibatch_size, 1))
 
 symbol_to_ind = iamondb["vocabulary"]
 ind_to_symbol = {v:k for k, v in symbol_to_ind.items()}
 chars = "today is the day"
+# add a period so that we know the ending
+chars = chars + "."
 inds = [symbol_to_ind[c] for c in chars]
 
 #inds = char_data[0]
@@ -113,6 +122,7 @@ inds = [symbol_to_ind[c] for c in chars]
 inds = np.array(inds)[:, None] * np.ones((1, minibatch_size)).astype("int32")
 inds_mask = 0 * inds + 1
 
+sample_len = 30 * len(chars)
 for i in range(sample_len):
     print("Sample step {}".format(i))
     enc_input_variable = Variable(torch.LongTensor(inds)).to(DEVICE)
@@ -153,15 +163,23 @@ for i in range(sample_len):
     berns = berns.detach().numpy()[-1]
     # berns is 2D, minibatch_size x 1
 
-    # get attn information
-    from IPython import embed; embed(); raise ValueError()
-    attn_k = attn_k.detach().numpy()[-1]
-    attn_w = attn_w.detach().numpy()[-1]
-    attn_phi = attn_phi.detach().numpy()[-1]
-    predicted_attn_w.append(attn_w)
-    predicted_attn_phi.append(attn_phi)
+    # get attn information for plots
+    attn_k_np = attn_k.detach().numpy()[-1]
+    attn_w_np = attn_w.detach().numpy()[-1]
+    attn_phi_np = attn_phi.detach().numpy()[-1]
+    predicted_attn_k.append(attn_k_np)
+    predicted_attn_w.append(attn_w_np)
+    predicted_attn_phi.append(attn_phi_np)
 
+    stop_scale = 7.5
+    for choose_i in range(coeffs.shape[0]):
+        thresh = attn_phi_np[choose_i, -1] > stop_scale * np.max(attn_phi_np[choose_i, :-1])
+        if thresh and predicted_stops[choose_i] < 0:
+            predicted_stops[choose_i] = i
+
+    # sample the handwriting trace
     sampled_coords = []
+    sampled_components = []
     for choose_i in range(coeffs.shape[0]):
         g = random_state.choice(np.arange(coeffs.shape[1]), p=coeffs[choose_i])
         coord_i = sample(mus[choose_i, g, 0], mus[choose_i, g, 1],
@@ -170,8 +188,18 @@ for i in range(sample_len):
                          berns[choose_i, 0],
                          random_state=random_state)
         sampled_coords.append(coord_i)
+        sampled_components.append(g)
     coords = np.array(sampled_coords)[None]
+    components = np.array(sampled_components)[None]
     predicted_coords.append(coords)
+    predicted_components.append(components)
+
+    # store density information for plots
+    predicted_mus.append(mus)
+    predicted_sigmas.append(sigmas)
+    predicted_coeffs.append(coeffs)
+    predicted_corrs.append(corrs)
+    predicted_berns.append(berns)
 
     attn_h_i = attn_h[-1].detach()
     attn_c_i = attn_c[-1].detach()
@@ -182,10 +210,82 @@ for i in range(sample_len):
     h2_i = h2[-1].detach()
     c2_i = c2[-1].detach()
 
+    if all([p >= 0 for p in predicted_stops]):
+        print("All samples ended, finishing...")
+        break
+
 # samples plot
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+
+# Deprecated in Matplotlib 2.2, so I'm copying it here
+def bivariate_normal(X, Y, sigmax=1.0, sigmay=1.0,
+                     mux=0.0, muy=0.0, sigmaxy=0.0):
+    Xmu = X-mux
+    Ymu = Y-muy
+
+    rho = sigmaxy/(sigmax*sigmay)
+    z = Xmu**2/sigmax**2 + Ymu**2/sigmay**2 - 2*rho*Xmu*Ymu/(sigmax*sigmay)
+    denom = 2*np.pi*sigmax*sigmay*np.sqrt(1-rho**2)
+    return np.exp(-z/(2*(1-rho**2))) / denom
+
+predicted_mus = np.stack(predicted_mus) # timestep batch out_components 2
+predicted_sigmas = np.stack(predicted_sigmas) # timestep batch out_components 2
+predicted_coeffs = np.stack(predicted_coeffs) # timestep batch out_components
+predicted_corrs = np.stack(predicted_corrs) # timestep batch out_components
+predicted_berns = np.stack(predicted_berns) # timestep batch 1
+attn_phi = np.stack(predicted_attn_phi) # timesteps batch input_step_length
+attn_k = np.stack(predicted_attn_k) # timesteps batch attn_components
+
+predicted_components = np.concatenate(predicted_components, axis=0)
+
+n_plots = 5
+for n in range(n_plots):
+    this_stop = predicted_stops[n]
+    if this_stop == -1:
+        this_stop = this_mus.shape[0]
+
+    this_components = tc = predicted_components[:this_stop, n]
+
+    this_mus = predicted_mus[np.arange(this_stop), n, tc]
+    this_sigmas = predicted_sigmas[np.arange(this_stop), n, tc]
+    this_coeffs = predicted_coeffs[np.arange(this_stop), n, tc]
+    this_corrs = predicted_corrs[np.arange(this_stop), n, tc]
+    this_berns = predicted_berns[np.arange(this_stop), n]
+    cumulative_mus = np.cumsum(this_mus, axis=0)[:this_stop]
+
+    minx, maxx = np.min(cumulative_mus[:, 0]), np.max(cumulative_mus[:, 0])
+    miny, maxy = np.min(cumulative_mus[:, 1]), np.max(cumulative_mus[:, 1])
+
+    # approx 400 pts in each axis resolution
+    delta = abs(maxx - minx) / 400.
+    x = np.arange(minx, maxx, delta)
+    y = np.arange(miny, maxy, delta)
+    x_grid, y_grid = np.meshgrid(x, y)
+    z_grid = np.zeros_like(x_grid)
+    epsilon = 1E-8
+
+    for i in range(this_stop):
+        # what
+        cov = np.array([[this_sigmas[i, 0], 0.],
+                        [0., this_sigmas[i, 1]]])
+
+        gauss = bivariate_normal(x_grid, y_grid, mux=cumulative_mus[i, 0], muy=cumulative_mus[i, 1],
+                                 sigmax=cov[0, 0], sigmay=cov[1, 1],
+                                 sigmaxy=this_corrs[i] * cov[0, 0] * cov[1, 1])
+        # needs to be rho * sigmax * sigmay
+        z_grid += gauss * np.power(this_sigmas[i, 0] + this_sigmas[i, 1], 0.4) / (np.max(gauss) + epsilon)
+    plt.figure()
+    plt.imshow(z_grid, interpolation="bilinear", cmap=cm.jet)
+    plt.axes().get_xaxis().set_visible(False)
+    plt.axes().get_yaxis().set_visible(False)
+    plt.axis("off")
+    plt.savefig("plot_density_conditional_handwriting{}.png".format(n))
+
+"""
+# attn plots...
 attn_weights = np.concatenate(predicted_coords, axis=0)
 n_plots = 5
 for n in range(n_plots):
@@ -196,15 +296,21 @@ for n in range(n_plots):
     ax.set_aspect('equal')
     plt.savefig("plot_sample_conditional_handwriting{}.png".format(n))
 print("Plotted {} examples, as 'plot_sample_handwriting*.png'".format(n_plots))
+"""
 
 predicted_coords[-1][..., 2] = 1.
 traces = np.concatenate(predicted_coords, axis=0)
-n_plots = 5
+strokes = np.concatenate(predicted_coords, axis=0)
+epsilon = 1e-8
+strokes[:, :2] = np.cumsum(strokes[:, :2], axis=0)
+minx, maxx = np.min(strokes[:, 0]), np.max(strokes[:, 0])
+miny, maxy = np.min(strokes[:, 1]), np.max(strokes[:, 1])
 for n in range(n_plots):
     fig, ax = plt.subplots(1, 1)
-    for stroke in split_strokes(cumsum(traces[:, n])):
+    this_stop = predicted_stops[n]
+    for stroke in split_strokes(cumsum(traces[:this_stop, n])):
         plt.plot(stroke[:, 0], -stroke[:, 1])
-    ax.set_title("sampled {}: {}".format(n, chars))
+    ax.set_title("sampled {}: {}".format(n, chars[:-1]))
     ax.set_aspect('equal')
     plt.savefig("plot_sample_conditional_handwriting{}.png".format(n))
 print("Plotted {} examples, as 'plot_sample_handwriting*.png'".format(n_plots))
