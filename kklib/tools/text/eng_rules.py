@@ -1140,11 +1140,22 @@ def rule_g2p(string, hyphenate=True):
     return abs_final_phones, abs_final_rules
 
 cmu = None
-
 def load_cmu():
+    """
+    Will download cmudict if not found
+    """
     cmupath = os.path.join(os.path.dirname(__file__), "cmudict.json.gz")
     if not os.path.exists(cmupath):
-        raise ValueError("{} not found!".format(cmupath))
+        from ...core import download
+        url = "https://raw.githubusercontent.com/kastnerkyle/Poetry-Tools/c9927045f68e0babe73d46314a0976ffd0e4cf97/poetrytools/cmudict/cmudict.json"
+        cur_dir = str(os.sep).join(__file__.split(os.sep)[:-1])
+        full_path = cur_dir + os.sep + "cmudict.json"
+        # download it
+        download(url, full_path, bypass_certificate_check=True)
+        # compress it
+        with open(full_path, 'rb') as f_in, gzip.open(full_path + ".gz", 'wb') as f_out:
+            f_out.writelines(f_in)
+        os.remove(full_path)
 
     if os.path.exists(cmupath):
         # get cmudict from https://github.com/hyperreality/Poetry-Tools/tree/master/poetrytools/cmudict
@@ -1398,6 +1409,7 @@ def rulebased_g2p(line, force_upper=True, hyphenate=True, verbose=False):
 
 
 if __name__ == "__main__":
+    load_cmu()
     tst = "'TAUGHT TO GROW'?" # easiest is to look for leading ' and change it...
     tst = "TAUGHT TO GROW?"
     tst = "MACHINES DON'T NEED TO FEEL FEELINGS."

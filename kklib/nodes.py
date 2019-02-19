@@ -563,9 +563,101 @@ class GLSTM(nn.Module):
     def make_inits(self, minibatch_size):
         return self.cell.make_inits(minibatch_size)
 
+# https://github.com/pytorch/pytorch/issues/229
+def flip(x, dim):
+    dim = x.dim() + dim if dim < 0 else dim
+    inds = tuple(slice(None, None) if i != dim
+            else x.new(torch.arange(x.size(i)-1, -1, -1).tolist()).long()
+            for i in range(x.dim()))
+    return x[inds]
+
 class GBiLSTM(nn.Module):
     def __init__(self, list_of_input_sizes, num_units, random_state=None, init=None, proj_init=None, cell_init=None, cell_dropout_keep_rate=None, name=""):
         super(GBiLSTM, self).__init__()
+        self.list_of_input_sizes = list_of_input_sizes
+        self.num_units = num_units
+        self.random_state = random_state
+
+        self.proj_init = proj_init
+        self.cell_init = cell_init
+        if init is not None:
+            self.proj_init = init
+            self.cell_init = init
+            proj_init = init
+            cell_init = init
+        self.cell_dropout_keep_rate = cell_dropout_keep_rate
+
+        self.projf = GLinear(list_of_input_sizes, num_units, random_state=self.random_state, init=proj_init)
+        self.projb = GLinear(list_of_input_sizes, num_units, random_state=self.random_state, init=proj_init)
+        self.cellf = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init, cell_dropout_keep_rate=cell_dropout_keep_rate)
+        self.cellb = GLSTMCell([num_units], num_units, random_state=self.random_state, init=cell_init, cell_dropout_keep_rate=cell_dropout_keep_rate)
+
+    def forward(self, list_of_inputs, hf=None, cf=None, hb=None, cb=None, mask=None):
+        # do it the fully proper way
+        # may decide to just do the flip mask and flip hiddens version later
+        pf = self.projf(list_of_inputs)
+        pb = self.projb(list_of_inputs)
+        if hf is None:
+            p_hf = 0. * pf[0, :, :self.num_units]
+        else:
+            p_hf = hf
+
+        if cf is None:
+            p_cf = 0. * pf[0, :, :self.num_units]
+        else:
+            p_cf = cf
+
+        if hb is None:
+            p_hb = 0. * pb[0, :, :self.num_units]
+        else:
+            p_hb = hb
+
+        if cb is None:
+            p_cb = 0. * pb[0, :, :self.num_units]
+        else:
+            p_cb = cb
+
+        if mask is None:
+            mask = 1. + 0. * pf[:, :, 0]
+            mask = mask.type(pf.dtype)
+
+        pb = flip(pb, 0)
+        r_mask = flip(mask, 0)
+
+        all_hf = []
+        all_cf = []
+        all_hb = []
+        all_cb = []
+        for i in range(pf.shape[0]):
+            hf, cf = self.cellf([pf[i]], p_hf, p_cf, mask=mask[i])
+            # mask is the same because we flipped the sequence
+            hb, cb = self.cellb([pb[i]], p_hb, p_cb, mask=r_mask[i])
+            p_hf = hf
+            p_cf = cf
+            p_hb = hb
+            p_cb = cb
+
+            all_hf.append(hf)
+            all_cf.append(cf)
+
+            all_hb.append(hb)
+            all_cb.append(cb)
+        all_hf = torch.stack(all_hf)
+        all_cf = torch.stack(all_cf)
+
+        all_hb = torch.stack(all_hb)
+        all_cb = torch.stack(all_cb)
+
+        all_hb = flip(all_hb, 0)
+        all_cb = flip(all_cb, 0)
+        return all_hf, all_cf, all_hb, all_cb
+
+    def make_inits(self, minibatch_size):
+        return self.cellf.make_inits(minibatch_size) + self.cellb.make_inits(minibatch_size)
+
+class GBiLSTMFancy(nn.Module):
+    def __init__(self, list_of_input_sizes, num_units, random_state=None, init=None, proj_init=None, cell_init=None, cell_dropout_keep_rate=None, name=""):
+        super(GBiLSTMFancy, self).__init__()
         self.list_of_input_sizes = list_of_input_sizes
         self.num_units = num_units
         self.random_state = random_state
@@ -730,7 +822,7 @@ class MultiHeadGlobalAttention(nn.Module):
 
 
 class GGaussianAttentionCell(nn.Module):
-    def __init__(self, list_of_query_sizes, list_of_key_sizes, hidden_size, n_components=10, step_op="exp", attention_scale=1., softmax_energy=False, cell_dropout_keep_rate=None, random_state=None, init=None, name=""):
+    def __init__(self, list_of_query_sizes, list_of_key_sizes, hidden_size, n_components=10, step_op="exp", attention_scale=1., min_step=1E-4, softmax_energy=False, cell_dropout_keep_rate=None, random_state=None, init=None, name=""):
         # only query key
         # no query, key, value here
         super(GGaussianAttentionCell, self).__init__()
@@ -740,6 +832,7 @@ class GGaussianAttentionCell(nn.Module):
         key_dim = sum(list_of_key_sizes)
         self.key_dim = key_dim
         self.n_components = n_components
+        self.min_step = min_step
 
         if step_op == "exp":
             self.step_op = exp
@@ -759,9 +852,8 @@ class GGaussianAttentionCell(nn.Module):
     def _calc_phi(self, lk_t, la_t, lb_t, lu):
         la_t = la_t[..., None]
         lb_t = lb_t[..., None]
-        lk_t = lk_t[..., None]# + np.log(self.attention_scale)
+        lk_t = lk_t[..., None]
         if not self.softmax_energy:
-            # instant nan
             core = ((lk_t - lu) ** 2)
             phi = exp(-core * lb_t) * la_t
             # use softplus? no longer technically gaussian in that case...
@@ -792,7 +884,7 @@ class GGaussianAttentionCell(nn.Module):
         b_t = torch.exp(b_t)
 
         k_tm1 = previous_attention_position
-        step_size = self.attention_scale * self.step_op(k_t)
+        step_size = self.attention_scale * self.step_op(k_t) + self.min_step
         k_t = k_tm1 + step_size
 
         ctx = self.key_proj(list_of_keys)
@@ -870,21 +962,21 @@ class GGaussianAttentionLSTM(nn.Module):
 
         # this is where teacher forcing dropout tricks could happen
         # do RNN before, that then controls the attention distribution
-        all_h = []
-        all_c = []
-        all_a_k = []
-        all_a_w = []
-        all_a_phi = []
         h = decoder_initial_hidden
         c = decoder_initial_cell
         a_k = attention_init_position
         a_w = attention_init_weight
+        all_h = [h]
+        all_c = [c]
+        all_a_k = [a_k]
+        all_a_w = [a_w]
+        all_a_phi = []
 
         for i in range(shifted[0].shape[0]):
             s_ = [shifted[k][i] for k in range(len(shifted))]
             #a_h, attn_info = self.attention([h], [he],  mask=input_mask)
             h_t, c_t, a_k_t, a_w_t, a_phi_t = self.attention_cell(s_, list_of_encoder_inputs,
-                                                                  h, c, a_k, a_w,
+                                                                  all_h[-1], all_c[-1], all_a_k[-1], all_a_w[-1],
                                                                   query_mask=output_mask,
                                                                   key_mask=input_mask)
             h = h_t
@@ -903,7 +995,7 @@ class GGaussianAttentionLSTM(nn.Module):
         all_a_k = torch.stack(all_a_k)
         all_a_w = torch.stack(all_a_w)
         all_a_phi = torch.stack(all_a_phi)
-        return all_h, all_c, all_a_k, all_a_w, all_a_phi
+        return all_h[1:], all_c[1:], all_a_k[1:], all_a_w[1:], all_a_phi
 
     def make_inits(self, minibatch_size):
         return self.attention_cell.make_inits(minibatch_size)
@@ -1063,6 +1155,7 @@ class GSequenceConv1dStack(nn.Module):
                  name="",
                  random_state=None):
         super(GSequenceConv1dStack, self).__init__()
+        self.has_warned = False
         input_size = sum(list_of_input_sizes)
         self.input_size = input_size
         self.init = init
@@ -1090,7 +1183,6 @@ class GSequenceConv1dStack(nn.Module):
         # should technically reverse it so that first elem is stack 0, though it doesn't matter here
         for n in range(n_stacks):
             self.layer_convs = nn.ModuleList()
-            self.layer_bns = nn.ModuleList()
             # reverse it so the order is same as specified
             sz = len(kernel_sizes) * output_size
             for kernel_size in kernel_sizes[::-1]:
@@ -1130,20 +1222,23 @@ class GSequenceConv1dStack(nn.Module):
 
     def forward(self, list_of_inputs, mask=None):
         mask = mask.type(list_of_inputs[0].dtype)
-        c = self.pre_proj(list_of_inputs) * mask[..., None]
+        c = self.pre_proj(list_of_inputs) #* mask[..., None]
+        if mask is not None and self.has_warned == False:
+            logger.info("WARNING: mask variable currently unused in GSequenceConv1dStack")
+            self.has_warned = True
         # assuming they come in as length, batch, features
         # now to N C L
         prev_layer = c.transpose(0, 1).transpose(1, 2)
         for ii in range(self.n_stacks):
             cs = []
             for jj, ks in enumerate(self.kernel_sizes):
-                c = self.stack_convs[ii][jj](prev_layer) * mask.transpose(1, 0)[:, None]
+                c = self.stack_convs[ii][jj](prev_layer) #* mask.transpose(1, 0)[:, None]
                 cs.append(c)
             layer = torch.cat(cs, dim=1)
             bn_l = self.stack_bns[ii](layer)
             r_l = relu(bn_l)
             prev_layer = prev_layer + r_l
-        prev_layer = prev_layer.transpose(0, 1).transpose(0, 2).contiguous() * mask[..., None]
+        prev_layer = prev_layer.transpose(0, 1).transpose(0, 2).contiguous() #* mask[..., None]
         return self.post_proj([prev_layer])
 
     """

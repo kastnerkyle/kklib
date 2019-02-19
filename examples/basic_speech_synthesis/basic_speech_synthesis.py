@@ -16,6 +16,7 @@ from kklib.datasets import fetch_ljspeech
 from kklib.datasets import rsync_fetch
 from kklib.penalties import CorrelatedGMMAndBernoulliCost
 
+import copy
 from models import Model
 from config import *
 
@@ -95,11 +96,11 @@ def loop(itr, extras, stateful):
     enc_input_variable = Variable(torch.LongTensor(cond_data)).to(DEVICE)
     enc_input_mask = torch.LongTensor(cond_data_mask).to(DEVICE)
 
-    dec_input_variable = Variable(torch.FloatTensor(data[:-1])).to(DEVICE)
-    dec_input_mask = torch.LongTensor(mask[:-1]).to(DEVICE)
+    dec_input_variable = Variable(torch.FloatTensor(copy.deepcopy(data[:-1]))).to(DEVICE)
+    dec_input_mask = torch.LongTensor(copy.deepcopy(mask[:-1])).to(DEVICE)
 
-    target_variable = Variable(torch.FloatTensor(data[1:])).to(DEVICE)
-    loss_mask = torch.FloatTensor(mask[1:]).to(DEVICE)
+    target_variable = Variable(torch.FloatTensor(copy.deepcopy(data[1:]))).to(DEVICE)
+    loss_mask = torch.FloatTensor(copy.deepcopy(mask[1:])).to(DEVICE)
 
     o = model(enc_input_variable, dec_input_variable,
               attn_h_i, attn_c_i, attn_k_i, attn_w_i,

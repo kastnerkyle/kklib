@@ -35,12 +35,15 @@ class Model(nn.Module):
         self.prenet1 = GLinear([output_size], prenet_size, random_state=self.random_state, init=init)
         self.prenet2 = GLinear([prenet_size], enc_hidden_size, random_state=self.random_state, init=init)
         # no cell dropout on encoder
+        # could be bug in BiLSTM too...
+        #self.enc_proj = GLinear([embed_size, n_filters], enc_hidden_size, random_state=self.random_state, init=init)
         self.enc_rnn = GBiLSTM([embed_size, n_filters], enc_hidden_size,
                                 random_state=self.random_state, init=init)
         self.attn = GGaussianAttentionLSTM([enc_hidden_size, enc_hidden_size], [enc_hidden_size], dec_hidden_size,
-                                           n_components=10, attention_scale = 1.,
+                                           n_components=10,
+                                           attention_scale=1.,
                                            step_op="softplus",
-                                           cell_dropout_keep_rate=cell_dropout_keep_rate,
+                                           cell_dropout_keep_rate=1., #cell_dropout_keep_rate,
                                            shift_decoder_inputs=False, random_state=random_state, init=init)
         self.dec_rnn1 = GLSTM([enc_hidden_size, 2 * enc_hidden_size, dec_hidden_size], dec_hidden_size,
                               cell_dropout_keep_rate=cell_dropout_keep_rate, random_state=self.random_state, init=init)
@@ -52,16 +55,17 @@ class Model(nn.Module):
         e = self.encoder(x)
         c = self.conv_stack([e], mask=enc_input_mask)
         hf, cf, hb, cb = self.enc_rnn([e, c], mask=enc_input_mask)
+        #p_e = self.enc_proj([e, c])
 
         # apply the prenet
-        p_y1 = self.prenet1([y])
-        dp_y1 = nn.functional.dropout(p_y1, 0.5, training=True)
-        p_y2 = self.prenet2([dp_y1])
-        dp_y2 = nn.functional.dropout(p_y2, 0.5, training=True)
+        d_y = nn.functional.dropout(y, 0.5, training=True)
+        dp_y1 = nn.functional.relu(self.prenet1([d_y]))
+        dp_y2 = nn.functional.dropout(dp_y1, 0.5, training=True)
+        p_y2 = nn.functional.relu(self.prenet2([dp_y2]))
 
-        attn_h, attn_c, attn_k, attn_w, attn_phi = self.attn([hf, hb], [dp_y2], attn_h_i, attn_c_i, attn_k_i, attn_w_i, input_mask=enc_input_mask, output_mask=dec_input_mask)
-        h1, c1 = self.dec_rnn1([dp_y2, attn_w, attn_h], h1_i, c1_i, mask=dec_input_mask)
-        h2, c2 = self.dec_rnn2([dp_y2, attn_w, h1], h2_i, c2_i, mask=dec_input_mask)
+        attn_h, attn_c, attn_k, attn_w, attn_phi = self.attn([hf, hb], [p_y2], attn_h_i, attn_c_i, attn_k_i, attn_w_i, input_mask=enc_input_mask, output_mask=dec_input_mask)
+        h1, c1 = self.dec_rnn1([p_y2, attn_w, attn_h], h1_i, c1_i, mask=dec_input_mask)
+        h2, c2 = self.dec_rnn2([p_y2, attn_w, h1], h2_i, c2_i, mask=dec_input_mask)
         preds = self.output_proj([h2])
         return preds, attn_h, attn_c, attn_k, attn_w, attn_phi, h1, c1, h2, c2
 
