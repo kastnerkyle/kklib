@@ -62,7 +62,7 @@ c1_i = Variable(c1_i).to(DEVICE)
 h2_i = Variable(h2_i).to(DEVICE)
 c2_i = Variable(c2_i).to(DEVICE)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10000, 20000, 30000, 500000], gamma=0.5)
+#scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10000, 20000, 30000, 500000], gamma=0.5)
 
 saver_dict = {"Model": model,
               "optimizer": optimizer}
@@ -126,7 +126,7 @@ def loop(itr, extras, stateful):
         # backprop and optimize
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        scheduler.step()
+        #scheduler.step()
         optimizer.step()
 
     loss = float(loss.detach().cpu().data.numpy())
