@@ -2,7 +2,6 @@ import numpy as np
 
 from .tools.audio import stft
 from .tools.audio import linear_to_mel_weight_matrix
-#from .tools.audio import iterate_invert_spectrogram
 from .tools.audio import soundsc
 from .tools.text import pronounce_chars
 from .tools.text import text_to_sequence
@@ -11,6 +10,7 @@ from .tools.text import cleaners
 from .tools.text import get_vocabulary_sizes
 
 from .core import get_logger
+from .core import get_cache_dir
 
 from scipy.io import wavfile
 import numpy as np
@@ -326,8 +326,10 @@ class wavfile_caching_mel_tbptt_iterator(object):
                  upper_edge_hertz=7800.0,
                  start_index=0,
                  stop_index=None,
-                 cache_dir_base="/Tmp/kastner/_data_cache",
+                 cache_dir_base="default",
                  shuffle=False, random_state=None):
+         if self.cache_dir_base == "default":
+             self.cache_dir_base = get_cache_dir()
          self.masked = masked
          self.wavfile_list = wavfile_list
          self.wav_scale = wav_scale
@@ -685,8 +687,9 @@ class wavfile_caching_mel_tbptt_iterator(object):
             char_txt = char_txt.encode("ascii", "replace")
             try:
                 clean_char_txt = cleaners.english_cleaners(char_txt)
-            except:
+            except Exception as e:
                 print("unicode devil in cache read txt features")
+                print(e)
                 from IPython import embed; embed(); raise ValueError()
             clean_char_txt_split = clean_char_txt.split(" ")
 

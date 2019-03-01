@@ -319,7 +319,9 @@ def rsync_fetch(fetch_func, machine_to_fetch_from, *args, **kwargs):
     return r
 
 
-def fetch_ljspeech(path="/Tmp/kastner/lj_speech/LJSpeech-1.0/"):
+def fetch_ljspeech(path=None):
+    if path is None:
+        raise ValueError("path required to exact datadir, with preprocessed files such as ~/ubuntu/LJSpeech-1.0/")
     if not path.endswith(os.sep):
         path = path + os.sep
 

@@ -150,11 +150,15 @@ def get_models_dir(special_check=True, verbose=True):
     return checkpoint_dir
 
 
-def get_cache_dir():
-    local_cache_dir = "/Tmp/" + USER + "/_cache/"
+def get_cache_dir(special_check=True):
+    if special_check and _special_check(verbose=verbose):
+        local_cache_dir = "/Tmp/" + USER + "/_data_cache/"
+    else:
+        local_cache_dir = "/home/" + USER + "_data_cache"
     if not os.path.exists(local_cache_dir):
         os.mkdir(local_cache_dir)
-    return local_cache_dir
+    return local_cache_di if self.cache_dir_base == "default":
+        self.cache_dir_base = "/Tmp/kastner/_data_cache"
 
 
 def get_lookup_dir():
@@ -500,6 +504,7 @@ class Saver(object):
         state_dict = {k: v.state_dict() for k, v in saver_dict.items()}
         save_checkpoint(state_dict, full_path)
 
+# TODO: Time based saver?
 def run_loop(saver_dict,
              train_loop_function, train_itr,
              valid_loop_function, valid_itr,
@@ -509,7 +514,10 @@ def run_loop(saver_dict,
              n_valid_steps_per=50,
              valid_stateful_args=None,
              status_every_s=5,
-             models_to_keep=5):
+             models_to_keep=5,
+             permanent_models_to_keep=100,
+             permanent_step_upper_lim=50000,
+             permanent_step_lower_lim=1000):
 
     """
     if restore_model:
@@ -564,6 +572,7 @@ def run_loop(saver_dict,
     model_saver = Saver(max_to_keep=models_to_keep)
     train_best_model_saver = Saver(max_to_keep=models_to_keep)
     valid_best_model_saver = Saver(max_to_keep=models_to_keep)
+    perma_saver = Saver(max_to_keep=permanent_models_to_keep)
 
     checkpoint_dir = get_checkpoint_dir()
 
@@ -709,6 +718,11 @@ def run_loop(saver_dict,
         thw.send((save_html_path, results_dict))
         model_saver.save(saver_dict, os.path.join(checkpoint_dir, "saved_models", "checkpoint_model"),
                          train_itr_steps_taken)
+
+        if train_itr_steps_taken % min(permanent_step_upper_lim, max(permanent_step_lower_lim, int(n_steps // permanent_models_to_keep))) == 0:
+            perma_saver.save(saver_dict, os.path.join(checkpoint_dir, "saved_models", "permanent_model"),
+            train_itr_steps_taken)
+
         if was_best_valid_loss:
             logger.info("had best valid, step {}".format(train_itr_steps_taken))
             valid_best_model_saver.save(saver_dict, os.path.join(checkpoint_dir, "saved_models", "valid_model"),

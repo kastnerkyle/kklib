@@ -1145,7 +1145,9 @@ class GBiLSTMMultiHeadAttentionLSTM(nn.Module):
 
 
 class GSequenceConv1dStack(nn.Module):
-    def __init__(self, list_of_input_sizes, output_size, n_stacks=1, residual=True,
+    def __init__(self, list_of_input_sizes, output_size,
+                 n_stacks=1,
+                 residual=False,
                  activation="relu",
                  kernel_sizes=[(1, 1,), (3, 3), (5, 5)],
                  border_mode="same",
@@ -1169,8 +1171,8 @@ class GSequenceConv1dStack(nn.Module):
 
         if not use_batch_norm:
             raise ValueError("Currently only support use_batch_norm=True")
-        if not residual:
-            raise ValueError("Currently only support residual=True")
+        if residual:
+            print("GSequenceConv1dStack currently only supports residual=False")
         if activation != "relu":
             raise ValueError("Currently only support relu activation")
 
